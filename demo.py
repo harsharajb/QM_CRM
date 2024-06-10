@@ -1,14 +1,17 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 from pymongo import MongoClient
 from bson import ObjectId
 from typing import List
+from pymongo import UpdateOne
+from typing import Dict
 
 app = FastAPI()
 
-client = MongoClient("mongodb+srv://harsha:harsha@cluster0.fny6tjl.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+client =  MongoClient("mongodb+srv://harsha:harsha@cluster0.fny6tjl.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 db = client["crm"]
 users_collection = db["data"]
 
@@ -17,7 +20,10 @@ class UserCreate(BaseModel):
     phone_number: str
     usergroup: str
     prod_type: str
-    twitterid: str
+    twitterid: Optional[str] = None
+    instagramid:Optional[str] = None
+    facebookid:Optional[str] = None
+    youtubeid:Optional[str] = None
     category: str = ""
     subcategory: str = ""
     firstname: str
@@ -37,42 +43,102 @@ class UserCreate(BaseModel):
     customer_service_interactions: str = ""
     alternate_phone_number: Optional[int] = None
 
-class UserUpdate(BaseModel):
-    additional_fields: Optional[Dict[str, Any]] = None
+    
 
 @app.get("/", response_model=List[UserCreate])
-async def get_users():
-    todos = users_collection.find()
-    return [data for data in todos]
+async def get_data():
+    datas = users_collection.find()
+    result =[]
+    for data in datas:
+        result.append(data)
+    return result
 
-@app.get("/{usergroup}", response_model=List[UserCreate])
+@app.get("/customer/{usergroup}", response_model=List[UserCreate])
 async def get_users_by_usergroup(usergroup: str):
     users = users_collection.find({"usergroup": usergroup})
-    return [user for user in users]
+    result = []
+    for user in users:
+        result.append(user)
+    return result
 
-@app.get("/item/{data}", response_model=List[UserCreate])
+@app.get("/userdata/{data}", response_model=List[UserCreate])
 async def get_users_by_email_ph(data: str):
-    users = users_collection.find({"$or": [{"email": data}, {"phone_number": data}]})
-    return [user for user in users]
+    users = users_collection.find({
+        "$or": [
+            {"email": data},
+            {"phone_number": data}
+        ]
+    })
+
+    result = [user for user in users]
+    return result
+
+from fastapi.responses import JSONResponse
+
+@app.put("/editcrm/{value}", response_model=None)
+async def update_user(value: str, data: Dict):
+    existing_user = users_collection.find_one({"$or": [
+            {"email": value},
+            {"phone_number": value}
+        ]})
+    if not existing_user:
+        return JSONResponse(content={"message": "User not found"})
+    if existing_user:
+        users_collection.update_one({"$or": [
+                {"email": value},
+                {"phone_number": value}
+            ]}, {"$set": data})
+        
+        return JSONResponse(content={"message": "User updated successfully"})
+
+@app.delete("/delete/")
+async def delete_user(email: str, phone_number: str, usergroup: str):
+    delete_result = users_collection.delete_one({
+        "email": email,
+        "phone_number": phone_number,
+        "usergroup": usergroup
+    })
+   
+    if delete_result.deleted_count == 0:
+        return JSONResponse(content={"message": "User not found"})
+ 
+    return JSONResponse(content={"message": "User deleted successfully"})
 
 @app.post("/")
-async def create_user(data: UserCreate):
-    users_collection.insert_one(data.dict())
+async def post_data(data: UserCreate):
 
-@app.put("/{user_id}")
-async def update_user(user_id: str, data: UserUpdate):
-    # Check if the user exists
-    if not users_collection.find_one({"_id": ObjectId(user_id)}):
-        raise HTTPException(status_code=404, detail="User not found")
+    is_present = users_collection.find_one({
+        "email": data.email,
+        "phone_number": data.phone_number,
+        "usergroup": data.usergroup
+    })
     
-    # Update the user document
-    update_data = {}
-    if data.additional_fields:
-        update_data.update(data.additional_fields)
+    if is_present:
+        #if data already exists, then its going to update the new values which are enterd by the user......
+        updated_data = {}
+        for field, value in data.model_dump().items():
+            if field == "prod_type":
+                continue
+            elif value is not None: 
+                updated_data[field] = value
+            else:
+                updated_data[field] = is_present.get(field) #if new value is none.. thn keep the existing data as it is....
+        
+        # Update the document in MongoDB
+        users_collection.update_one({
+            "email": data.email,
+            "phone_number": data.phone_number,
+            "usergroup": data.usergroup
+        }, {"$set": updated_data})
+        
+        return JSONResponse(content={"message": "User Data Already Present.. Data Updated Successfully.."})
     
-    users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
-    return {"message": "User updated successfully"}
-    
+    else:
+        # Insert the new data
+        users_collection.insert_one(data.model_dump())
+        return JSONResponse(content={"message": "User data inserted successfully"})
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
